@@ -33,6 +33,8 @@ class StitchOptions(BaseModel):
 
 
 class GenerateFromPhonemesRequest(BaseModel):
-    """Simple request for phoneme-to-speech generation"""
-    phonemes: str = Field(..., description="Phoneme string to synthesize")
+    phonemes: List[str]
     voice: str = Field(..., description="Voice ID to use for generation")
+    trim_ms: int = Field(default=0, ge=0, le=100000, description="Trim milliseconds of audio before adding pause")
+    pause_duration: float = Field(default=0.0, ge=0.0, le=60.0, description="Pause duration in seconds between sentences")
+    speed: float = Field(default=1.0, ge=0.1, le=5.0, description="Speed factor for generation")

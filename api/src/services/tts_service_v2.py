@@ -50,7 +50,7 @@ class TTSService:
                 if not output_format:
                     yield np.array([], dtype=np.float32)
                     return
-                
+
                 final_chunk = await AudioService.convert_audio(
                     np.array([0], dtype=np.float32),
                     24000,
@@ -62,7 +62,7 @@ class TTSService:
                 if final_chunk is not None:
                     yield final_chunk
                 return
-            
+
             # Skip empty chunks
             if not tokens:
                 return
@@ -78,16 +78,16 @@ class TTSService:
                     if len(tokens) > max_length:
                         logger.warning(f"Truncating sequence from {len(tokens)} to {max_length} tokens")
                         tokens = tokens[:max_length]
-                    
+
                     # Process all chunks from the generator
                     async for audio in model.forward(tokens, voice_tensor, speed=speed):
                         if audio is None:
                             continue
-                        
+
                         # Convert tensor to numpy if needed
                         if isinstance(audio, torch.Tensor):
                             audio = audio.cpu().numpy()
-                        
+
                         # Convert audio if needed
                         if output_format:
                             converted = await AudioService.convert_audio(
@@ -108,15 +108,15 @@ class TTSService:
             else:
                 # For v0.19, use existing generate method
                 audio = await model.generate(tokens, voice_tensor, speed=speed)
-                
+
                 if audio is None:
                     logger.error("Model generated None for audio chunk")
                     return
-                
+
                 if len(audio) == 0:
                     logger.error("Model generated empty audio chunk")
                     return
-                    
+
                 # Convert audio if needed
                 if output_format:
                     try:
@@ -140,6 +140,86 @@ class TTSService:
             logger.error(f"Failed to process tokens: {str(e)}")
             return
 
+    async def _generate_audio_stream(
+        self,
+        tokens: List[int],
+        voice_tensor: torch.Tensor,
+        speed: float = 1.0,
+    ) -> AsyncGenerator[np.ndarray, None]:
+        chunk_index = 0
+        try:
+            try:
+                async for result in self._process_chunk(
+                    tokens,
+                    voice_tensor,
+                    speed,
+                    is_first=(chunk_index == 0),
+                    is_last=False,
+                ):
+                    if result is not None:
+                        yield result
+                        chunk_index += 1
+            except Exception as e:
+                logger.error(f"Failed to process audio for chunk: '{tokens}...'. Error: {str(e)}")
+            if chunk_index > 0:
+                try:
+                    async for final_result in self._process_chunk(
+                        [],
+                        voice_tensor,
+                        speed,
+                        is_first=False,
+                        is_last=True,
+                    ):
+                        if final_result is not None:
+                            logger.debug("Yielding final chunk to finalize audio")
+                            yield final_result
+                except Exception as e:
+                    logger.error(f"Failed to process final chunk: {str(e)}")
+            else:
+                logger.warning("No audio chunks were successfully processed")
+
+        except Exception as e:
+            logger.error(f"Error in audio generation stream: {str(e)}")
+            raise
+
+    async def generate_from_phonemes(
+        self,
+        phonemes: str,
+        voice: str,
+        speed: float = 1.0,
+    ) -> Tuple[np.ndarray, float]:
+        """Generate complete audio for text using streaming internally."""
+        start_time = time.time()
+        chunks = []
+        voice_tensor = None
+
+        try:
+            # Get model and load voice
+            device = "cuda" if settings.use_gpu else "cpu"
+            voice_tensor = await self._voice_manager.load_voice(voice, device=device, version="v1.0")
+            # Process text in chunks with smart splitting
+            tokens = tokenize(phonemes)
+            if len(tokens) > 500:  # Model context limit
+                raise ValueError(f"Phoneme sequence too long ({len(tokens)} tokens, max 500)")
+
+            tokens = [0] + tokens + [0]  # Add start/end tokens
+            async for chunk in self._generate_audio_stream(tokens=tokens, voice_tensor=voice_tensor, speed=speed):
+                if chunk is not None and isinstance(chunk, np.ndarray):
+                    chunks.append(chunk)
+            if not chunks:
+                raise ValueError("No audio chunks were generated successfully")
+            audio = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+            processing_time = time.time() - start_time
+            return audio, processing_time
+
+        except Exception as e:
+            logger.error(f"Error in audio generation: {str(e)}")
+            raise
+        finally:
+            if voice_tensor is not None:
+                del voice_tensor
+                torch.cuda.empty_cache()
+
     async def generate_audio_stream(
         self,
         text: str,
@@ -152,7 +232,7 @@ class TTSService:
         stream_normalizer = AudioNormalizer()
         voice_tensor = None
         chunk_index = 0
-        
+
         try:
             # Get model and load voice
             model = await self.version_manager.get_model(version)
@@ -176,7 +256,7 @@ class TTSService:
                         if result is not None:
                             yield result
                             chunk_index += 1
-                        
+
                 except Exception as e:
                     logger.error(f"Failed to process audio for chunk: '{chunk_text[:100]}...'. Error: {str(e)}")
                     continue
@@ -221,7 +301,7 @@ class TTSService:
         start_time = time.time()
         chunks = []
         voice_tensor = None
-        
+
         try:
             # Get model and load voice
             model = await self.version_manager.get_model(version)
@@ -264,7 +344,7 @@ class TTSService:
 
     async def combine_voices(self, voices: List[str], version: Optional[str] = None) -> str:
         """Combine multiple voices.
-        
+
         Args:
             voices: List of voice names to combine
             version: Optional version to filter voices by
@@ -273,7 +353,7 @@ class TTSService:
 
     async def list_voices(self, version: Optional[str] = None) -> List[str]:
         """List available voices.
-        
+
         Args:
             version: Optional version to filter voices by
         """
